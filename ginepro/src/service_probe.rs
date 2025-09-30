@@ -32,6 +32,7 @@ where
     Lookup: LookupService,
 {
     service_definition: ServiceDefinition,
+    origin: http::uri::Uri,
     scheme: http::uri::Scheme,
     dns_lookup: Lookup,
     probe_interval: tokio::time::Duration,
@@ -68,8 +69,10 @@ impl<Lookup: LookupService> GrpcServiceProbe<Lookup> {
         config: GrpcServiceProbeConfig<Lookup>,
         endpoint_reporter: Sender<Change<SocketAddr, Endpoint>>,
     ) -> GrpcServiceProbe<Lookup> {
+        let origin = create_origin(config.service_definition.authority().clone());
         Self {
             service_definition: config.service_definition,
+            origin,
             dns_lookup: config.dns_lookup,
             probe_interval: config.probe_interval,
             endpoint_timeout: config.endpoint_timeout,
@@ -83,9 +86,15 @@ impl<Lookup: LookupService> GrpcServiceProbe<Lookup> {
 
     /// Enable tls for all endpoints.
     pub fn with_tls(self, tls_config: ClientTlsConfig) -> GrpcServiceProbe<Lookup> {
+        let mut parts = self.origin.into_parts();
+        parts.scheme = Some(http::uri::Scheme::HTTPS);
+        let origin = parts
+            .try_into()
+            .expect("Invalid URI. Impossible as all parts are present");
         Self {
             tls_config: Some(tls_config),
             scheme: http::uri::Scheme::HTTPS,
+            origin,
             ..self
         }
     }
@@ -213,7 +222,8 @@ impl<Lookup: LookupService> GrpcServiceProbe<Lookup> {
             .map_err(|err| {
                 tracing::warn!("endpoint creation error: {:?}", err);
             })
-            .ok()?;
+            .ok()?
+            .origin(self.origin.clone());
 
         if let Some(ref tls_config) = self.tls_config {
             endpoint = endpoint
@@ -234,4 +244,14 @@ impl<Lookup: LookupService> GrpcServiceProbe<Lookup> {
 
         Some(endpoint)
     }
+}
+
+fn create_origin(authority: http::uri::Authority) -> http::uri::Uri {
+    let mut parts = http::uri::Parts::default();
+    parts.scheme = Some(http::uri::Scheme::HTTP);
+    parts.authority = Some(authority);
+    parts.path_and_query = Some(http::uri::PathAndQuery::from_static(""));
+    parts
+        .try_into()
+        .expect("Invalid URI. Impossible as all parts are present")
 }
